@@ -4,6 +4,14 @@
 #include <semaphore.h>
 #include <unistd.h>
 
+/* external function declarations */
+extern "C" {
+
+double* generate_frame_vector(int length);
+double* compression(double* frame, int length);
+
+}
+
 /* global settings */
 #define FRAME_WIDTH 800
 #define FRAME_HEIGHT 600
@@ -11,7 +19,8 @@
 #define FIFO_SIZE (FRAME_SIZE * 5)
 #define CACHE_ENTRIES 5
 
-/* semaphores */
+/* locks */
+pthread_mutex_t frame_buffer_mutex;
 
 /* FIFO */
 struct FIFO {
@@ -24,8 +33,16 @@ struct FIFO {
 
 /* Resources */
 struct Cache {
-  FIFO entries[CACHE_ENTRIES];
-  int available_entries[CACHE_ENTRIES], available_count;
+  // entries
+  struct {
+    FIFO buffer;
+    int status; // 0 - empty, 1 - filled, 2 - completed
+    pthread_mutex_t lock;
+  } entries[CACHE_ENTRIES];
+
+  int available_entries[CACHE_ENTRIES], available_count;  // entries that are empty
+  int complete_entries[CACHE_ENTRIES], complete_count;    // entries that are completed
+
   Cache() {
     available_count = CACHE_ENTRIES;
     for (int i = 0; i < CACHE_ENTRIES; i++) available_entries[i] = i;
@@ -34,8 +51,15 @@ struct Cache {
   int return_entry(int idx) { available_entries[available_count++] = idx;  return 0; }
 };
 
+double frame_buffer[FRAME_SIZE];
+
 /* Threads */
-void *T_Camera(void *arg) { printf("[ info ] Camera thread finished\n"); return nullptr; }
+void *T_Camera(void *arg) { 
+  double *frame = generate_frame_vector(FRAME_SIZE);
+  printf("[ info ] generated frame at %p\n", frame);
+  return nullptr;
+}
+
 void *T_Estimator(void *arg) { printf("[ info ] Estimator thread finished\n"); return nullptr; }
 void *T_Transformer(void *arg) { printf("[ info ] Transformer thread finished\n"); return nullptr; }
 
@@ -50,7 +74,8 @@ int main(int argc, char *argv[]) {
   }
   int interval = atoi(argv[1]);
 
-  /* init semaphores */
+  /* init locks */
+  pthread_mutex_init(&frame_buffer_mutex, NULL);
 
   /* init threads */
   int rc;
