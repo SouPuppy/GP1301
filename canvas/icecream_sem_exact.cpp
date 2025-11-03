@@ -18,7 +18,7 @@ sem_t refill;
 sem_t sell;
 bool refilling = false;
 
-pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;
 
 void* seller(void *arg)
 {
@@ -28,7 +28,7 @@ void* seller(void *arg)
 
 	while (!done) {
 		sem_wait(&sell);
-		pthread_mutex_lock(&mutex);
+		pthread_mutex_lock(&mtx);
 		if ( icecream > 0 ) {
 			for (int i=0; i<100; i++) {} // simulate selling duration
 			icecream--;
@@ -50,7 +50,7 @@ void* seller(void *arg)
 		if(!refilling)
 			sem_post(&sell);
 
-		pthread_mutex_unlock(&mutex);
+		pthread_mutex_unlock(&mtx);
 	}
 
 	pthread_exit((void *) mysell);
@@ -63,7 +63,7 @@ void *vendor(void *argc)
 	while (!done) {
 		sem_wait(&refill);
 
-		pthread_mutex_lock(&mutex);
+		pthread_mutex_lock(&mtx);
 		
 		icecream += REFILLSTOCKS;
 		refill_cnt--;
@@ -74,7 +74,7 @@ void *vendor(void *argc)
 		refilling = false;
 		sem_post(&sell);
 
-		pthread_mutex_unlock(&mutex);
+		pthread_mutex_unlock(&mtx);
 	}
 
 	pthread_exit(NULL);
