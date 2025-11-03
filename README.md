@@ -1,1 +1,7 @@
-# GP1301
+### Quick Start
+
+**demo**
+
+```bash
+make run 2
+```
