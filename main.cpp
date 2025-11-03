@@ -11,6 +11,8 @@
 #define FIFO_SIZE (FRAME_SIZE * 5)
 #define CACHE_ENTRIES 5
 
+/* semaphores */
+
 /* FIFO */
 struct FIFO {
   double *buffer;
@@ -18,6 +20,18 @@ struct FIFO {
   void push(double _) { /* TODO */ }
   double pop() { return 0.0; /* TODO */ }
   ~FIFO() { delete[] buffer; }
+};
+
+/* Resources */
+struct Cache {
+  FIFO entries[CACHE_ENTRIES];
+  int available_entries[CACHE_ENTRIES], available_count;
+  Cache() {
+    available_count = CACHE_ENTRIES;
+    for (int i = 0; i < CACHE_ENTRIES; i++) available_entries[i] = i;
+  }
+  int get_entry() { if (available_count <= 0) return -1; return available_entries[--available_count]; }
+  int return_entry(int idx) { available_entries[available_count++] = idx;  return 0; }
 };
 
 /* Threads */
@@ -29,31 +43,25 @@ pthread_t camera, estimator, transformer;
 
 /* main */
 int main(int argc, char *argv[]) {
+  /* parse arguments */
   if (argc != 2) {
     printf("Usage: %s <interval>\n", argv[0]);
     return -1;
   }
-
   int interval = atoi(argv[1]);
 
-  /* init threads */
-  printf("[ info ] initializing threads...\n");
+  /* init semaphores */
 
+  /* init threads */
   int rc;
   rc = pthread_create(&camera, NULL, T_Camera, (void *)&interval);  if (rc) { printf("Error: Unable to create camera thread, %d\n", rc); exit(-1); }
   rc = pthread_create(&estimator, NULL, T_Estimator, NULL);         if (rc) { printf("Error: Unable to create estimator thread, %d\n", rc); exit(-1); }
   rc = pthread_create(&transformer, NULL, T_Transformer, NULL);     if (rc) { printf("Error: Unable to create transformer thread, %d\n", rc); exit(-1); }
 
-  printf("[ info ] threads initialized\n");
-
-
   /* wait for threads to finish */
-  printf("[ info ] waiting for threads to finish...\n");
   rc = pthread_join(camera, NULL);                                  if (rc) { printf("Error: Unable to join camera thread, %d\n", rc); exit(-1); }
   rc = pthread_join(estimator, NULL);                               if (rc) { printf("Error: Unable to join estimator thread, %d\n", rc); exit(-1); }
   rc = pthread_join(transformer, NULL);                             if (rc) { printf("Error: Unable to join transformer thread, %d\n", rc); exit(-1); }
-
-  printf("[ info ] all threads finished\n");
 
   return 0;
 }
