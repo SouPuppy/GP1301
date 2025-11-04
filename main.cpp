@@ -49,7 +49,7 @@ struct FrameCache {
   void set_stat(int entry_id, fifoStatus stat) { entries[entry_id].status = stat; }
 
   FrameCache() {
-    available_count = CACHE_ENTRIES + 1;
+    available_count = CACHE_ENTRIES;
     arrived_count = 0;
     for (int i = 0; i < CACHE_ENTRIES; i++) {
       available_entries[i] = i;
