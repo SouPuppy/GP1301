@@ -28,41 +28,52 @@ volatile int job_done = 0; // 0 = in progress, 1 = done
 pthread_mutex_t frame_buffer_mutex;
 
 sem_t cache_entries_empty_sem;
-sem_t cache_entries_full_sem;
-
-
-/* FIFO */
-struct FIFO {
-  double *buffer;
-  size_t head, rear, count;
-  FIFO() { buffer = new double[FIFO_SIZE]; }
-  void enqueue_bu(double *buff, size_t len) { /* TODO */ }
-  double dequeue(double *buff, size_t len) { return 0.0; /* TODO */ }
-  ~FIFO() { delete[] buffer; }
-};
+sem_t cache_entries_arrived_sem;
 
 /* Resources */
 struct FrameCache {
   enum fifoStatus { EMPTY = 0, ARRIVED = 1, DELETE = 2 };
-  // entries
-  struct {
-    FIFO buffer;
+  // entries 
+  // FIXME - this is not complete yet
+  struct FIFO {
+    double buffer[FRAME_SIZE];
     fifoStatus status;
     pthread_mutex_t lock;
   } entries[CACHE_ENTRIES];
 
   int available_entries[CACHE_ENTRIES], available_count;  // entries that are empty
-  int complete_entries[CACHE_ENTRIES], complete_count;    // entries that are completed
+  int complete_entries[CACHE_ENTRIES], arrived_count;     // entries that are completed
 
-  FrameCache() {
-    available_count = CACHE_ENTRIES + 1;
-    for (int i = 0; i < CACHE_ENTRIES; i++) available_entries[i] = i;
-  }
-  void load_buffer(int entry_id, double *buffer, size_t len) { memcpy(entries[entry_id].buffer.buffer, buffer, len * sizeof(double)); }
   void lock_entry(int entry_id) { pthread_mutex_lock(&entries[entry_id].lock); }
   void unlock_entry(int entry_id) { pthread_mutex_unlock(&entries[entry_id].lock); }
   void set_stat(int entry_id, fifoStatus stat) { entries[entry_id].status = stat; }
-  int get_free_entry() { /* get empty entry */ return 4; }
+
+  FrameCache() {
+    available_count = CACHE_ENTRIES + 1;
+    arrived_count = 0;
+    for (int i = 0; i < CACHE_ENTRIES; i++) {
+      available_entries[i] = i;
+      pthread_mutex_init(&entries[i].lock, NULL);
+      entries[i].status = EMPTY;
+    }
+  }
+  
+  void load_buffer(int entry_id, double *buffer, size_t len) {
+    memcpy(entries[entry_id].buffer, buffer, len * sizeof(double));
+    entries[entry_id].status = ARRIVED;
+  }
+
+  int get_free_entry() {
+    printf("[sem] waiting...\n");
+    sem_wait(&cache_entries_empty_sem);
+    printf("[sem] acquired!\n");
+    return available_entries[--available_count];
+  }
+
+  int get_arrived_entry() {
+    sem_wait(&cache_entries_arrived_sem);
+    return complete_entries[--arrived_count];
+  }
 } gFrameCache;
 
 double frame_buffer[FRAME_SIZE];
@@ -76,7 +87,7 @@ void *T_Camera(void *arg) {
     frame = generate_frame_vector(FRAME_SIZE);
     if (frame == nullptr) { job_done = 1; break; }
     
-    // wait for a valid cache entries
+    // get a valid cache entry
     int entry_id = gFrameCache.get_free_entry();
 
     printf("[ info ] get cache entry %d\n", entry_id);
@@ -88,10 +99,15 @@ void *T_Camera(void *arg) {
 
     gFrameCache.set_stat(entry_id, FrameCache::ARRIVED);
     gFrameCache.unlock_entry(entry_id);
+
+    // signal one filled entry (for transformer later)
+    sem_post(&cache_entries_arrived_sem);
+
     // sleep for interval
     printf("[ info ] sleeping for %d s...\n", interval);
     sleep(interval);
   }
+  return nullptr;
 }
 
 void *T_Estimator(void *arg) { 
@@ -130,7 +146,7 @@ int main(int argc, char *argv[]) {
   /* init locks */
   pthread_mutex_init(&frame_buffer_mutex, NULL);
 
-  sem_init(&cache_entries_full_sem, 0, 0);
+  sem_init(&cache_entries_arrived_sem, 0, 0);
   sem_init(&cache_entries_empty_sem, 0, CACHE_ENTRIES);
 
 
