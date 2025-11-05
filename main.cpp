@@ -29,18 +29,18 @@ double* compression(double* frame, int length);
 
 /* global variables */
 
-int temp_frame_buffer_frame_id = -1; // [0 - CACHE_ENTRIES-1], -1 = empty
-double temp_frame_buffer[FRAME_SIZE];
+int fb_frame_id = -1; // [0 - CACHE_ENTRIES-1], -1 = empty
+double fb[FRAME_SIZE];
 
-volatile int job_done = 0; // 0 = in progress, 1 = done
+volatile int gJobDone = 0; // 0 = in progress, 1 = done
 
-pthread_mutex_t temp_frame_buffer_mutex;
+pthread_mutex_t fb_mutex;
 
-sem_t cache_entries_empty_sem;
-sem_t cache_entries_arrived_sem;
+sem_t cache_empty_sem; // cache empty semaphore
+sem_t cache_ready_sem; // cache ready semaphore
 
-sem_t temp_frame_buffer_empty_sem;
-sem_t temp_frame_buffer_ready_sem;
+sem_t fb_empty_sem; // framebuffer empty semaphore
+sem_t fb_ready_sem; // framebuffer ready semaphore
 
 /* Resources */
 struct FrameCache {
@@ -80,14 +80,14 @@ struct FrameCache {
   }
 
   int get_free_entry() {
-    sem_wait(&cache_entries_empty_sem);
+    sem_wait(&cache_empty_sem);
     int entry_id = available_entries[available_head];
     available_head = (available_head + 1) % CACHE_ENTRIES;
     return entry_id;
   }
 
   int get_arrived_entry() {
-    sem_wait(&cache_entries_arrived_sem);
+    sem_wait(&cache_ready_sem);
     int entry_id = arrived_entry[arrived_head];
     arrived_head = (arrived_head + 1) % CACHE_ENTRIES;
     return entry_id;
@@ -96,7 +96,7 @@ struct FrameCache {
   void flush(int entry_id) {
     available_rear = (available_rear + 1) % CACHE_ENTRIES;
     available_entries[available_rear] = entry_id;
-    sem_post(&cache_entries_empty_sem);
+    sem_post(&cache_empty_sem);
   }
 
 } gFrameCache;
@@ -106,12 +106,12 @@ void *T_Camera(void *arg) {
   int interval = *((int *)arg);
 
   double *frame;
-  while (!job_done) {
+  while (!gJobDone) {
     printf("%s Capturing frame...\n", DEBUG_CAMERA);
     frame = generate_frame_vector(FRAME_SIZE);
     if (frame == nullptr) { 
-      job_done = 1;
-      sem_post(&cache_entries_arrived_sem);
+      gJobDone = 1;
+      sem_post(&cache_ready_sem);
       break;
     }
     // get a valid cache entry
@@ -126,7 +126,7 @@ void *T_Camera(void *arg) {
     gFrameCache.release_entry(entry_id);
 
     // signal one filled entry (for transformer later)
-    sem_post(&cache_entries_arrived_sem);
+    sem_post(&cache_ready_sem);
 
     // sleep for interval
     sleep(interval);
@@ -135,46 +135,46 @@ void *T_Camera(void *arg) {
 }
 
 void *T_Estimator(void *arg) { 
-  while (!job_done) {
-    sem_wait(&temp_frame_buffer_ready_sem);
-    if (job_done) {
-      sem_post(&temp_frame_buffer_empty_sem);
+  while (!gJobDone) {
+    sem_wait(&fb_ready_sem);
+    if (gJobDone) {
+      sem_post(&fb_empty_sem);
       break;
     }
 
-    pthread_mutex_lock(&temp_frame_buffer_mutex);
-    printf("%s Estimator got framebuffer with frame id %d\n", DEBUG_ESTIMATOR, temp_frame_buffer_frame_id);
+    pthread_mutex_lock(&fb_mutex);
+    printf("%s Estimator got framebuffer with frame id %d\n", DEBUG_ESTIMATOR, fb_frame_id);
     
-gFrameCache.acquire_entry(temp_frame_buffer_frame_id);
+gFrameCache.acquire_entry(fb_frame_id);
 
     // estimate the cache and temp framebuffer with MSE
     double mse = 0.0;
     for (int i = 0; i < FRAME_SIZE; i++) {
-      mse += (temp_frame_buffer[i] - gFrameCache.entries[temp_frame_buffer_frame_id].buffer[i]) *
-             (temp_frame_buffer[i] - gFrameCache.entries[temp_frame_buffer_frame_id].buffer[i]);
+      mse += (fb[i] - gFrameCache.entries[fb_frame_id].buffer[i]) *
+             (fb[i] - gFrameCache.entries[fb_frame_id].buffer[i]);
     }
     mse /= FRAME_SIZE;
     printf("mse = %.6f\n", mse);
 
-gFrameCache.release_entry(temp_frame_buffer_frame_id);
+gFrameCache.release_entry(fb_frame_id);
     
     // flush the entry
-    gFrameCache.flush(temp_frame_buffer_frame_id);
+    gFrameCache.flush(fb_frame_id);
 
-    sem_post(&temp_frame_buffer_empty_sem);
-    pthread_mutex_unlock(&temp_frame_buffer_mutex);
+    sem_post(&fb_empty_sem);
+    pthread_mutex_unlock(&fb_mutex);
   }
   return nullptr;
 }
 
 void *T_Transformer(void *arg) { 
-  while (!job_done) {
+  while (!gJobDone) {
     // get framebuffer lock (for write protection)
-    sem_wait(&temp_frame_buffer_empty_sem);
-    if (job_done) {
+    sem_wait(&fb_empty_sem);
+    if (gJobDone) {
       break;
     }
-    pthread_mutex_lock(&temp_frame_buffer_mutex);
+    pthread_mutex_lock(&fb_mutex);
 
     // fetch from cache
     int entry_id = gFrameCache.get_arrived_entry();
@@ -184,17 +184,17 @@ gFrameCache.acquire_entry(entry_id);
     printf("%s Transformer got cache entry %d\n", DEBUG_TRANSFORMER, entry_id);
 
     // load data from cache to framebuffer
-    temp_frame_buffer_frame_id = entry_id;
-    memcpy(temp_frame_buffer, gFrameCache.entries[entry_id].buffer, FRAME_SIZE * sizeof(double));
+    fb_frame_id = entry_id;
+    memcpy(fb, gFrameCache.entries[entry_id].buffer, FRAME_SIZE * sizeof(double));
     
 gFrameCache.release_entry(entry_id);
 
     // pseudo compression and decompression
-    compression(temp_frame_buffer, FRAME_SIZE);
+    compression(fb, FRAME_SIZE);
     
     // notice estimator that frame is ready
-    pthread_mutex_unlock(&temp_frame_buffer_mutex);
-    sem_post(&temp_frame_buffer_ready_sem);
+    pthread_mutex_unlock(&fb_mutex);
+    sem_post(&fb_ready_sem);
   }
   return nullptr;
 }
@@ -211,13 +211,13 @@ int main(int argc, char *argv[]) {
   int interval = atoi(argv[1]);
 
   /* init locks */
-  pthread_mutex_init(&temp_frame_buffer_mutex, NULL);
+  pthread_mutex_init(&fb_mutex, NULL);
 
-  sem_init(&cache_entries_arrived_sem, 0, 0);
-  sem_init(&cache_entries_empty_sem, 0, CACHE_ENTRIES);
+  sem_init(&cache_ready_sem, 0, 0);
+  sem_init(&cache_empty_sem, 0, CACHE_ENTRIES);
   
-  sem_init(&temp_frame_buffer_empty_sem, 0, 1);
-  sem_init(&temp_frame_buffer_ready_sem, 0, 0);
+  sem_init(&fb_empty_sem, 0, 1);
+  sem_init(&fb_ready_sem, 0, 0);
 
   /* init threads */
   int rc;
@@ -229,6 +229,13 @@ int main(int argc, char *argv[]) {
   rc = pthread_join(camera, NULL);                                  if (rc) { printf("Error: Unable to join camera thread, %d\n", rc); exit(-1); }
   rc = pthread_join(estimator, NULL);                               if (rc) { printf("Error: Unable to join estimator thread, %d\n", rc); exit(-1); }
   rc = pthread_join(transformer, NULL);                             if (rc) { printf("Error: Unable to join transformer thread, %d\n", rc); exit(-1); }
+
+  /* cleanup */
+  pthread_mutex_destroy(&fb_mutex);
+  sem_destroy(&cache_ready_sem);
+  sem_destroy(&cache_empty_sem);
+  sem_destroy(&fb_empty_sem);
+  sem_destroy(&fb_ready_sem);
 
   return 0;
 }
